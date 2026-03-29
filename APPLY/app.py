@@ -300,12 +300,16 @@ def get_blog_summary_text(data, target_type, total_intr):
     opt_plan = data.get('옵션_일정', []) if data.get('옵션_일정') else [{'비율': '0%', '날짜': '-'}]
     if data.get('is_same'): bal_plan = opt_plan = data.get('옵션_일정', [])
     
-    summary = f"""[주요 규제 및 내용]
-✅ 전매제한 : {data['주요내용'].get('전매제한', 'X')}
-✅ 거주의무 : {data['주요내용'].get('거주의무', 'X')}
-✅ 재당첨제한 : {data['주요내용'].get('재당첨제한', 'X')}
+    # 규제 정보 줄바꿈 정리
+    reg_text = f"""[주요 규제 및 내용]
+✅ 택지유형 : {data['주요내용'].get('택지유형', '-')}
+✅ 전매제한 : {data['주요내용'].get('전매제한', '-')}
 ✅ 규제지역 : {data['주요내용'].get('규제지역', '-')}
+✅ 거주의무 : {data['주요내용'].get('거주의무', '-')}
 ✅ 분양가상한 : {data['주요내용'].get('분양가상한', '-')}
+✅ 재당첨제한 : {data['주요내용'].get('재당첨제한', '-')}"""
+
+    summary = f"""{reg_text}
 
 [청약일정]
 ✅ 모집공고 : {data['청약일정'].get('모집공고', '-')}
@@ -314,16 +318,38 @@ def get_blog_summary_text(data, target_type, total_intr):
 ✅ 당첨발표 : {data['청약일정'].get('당첨발표', '-')}
 ✅ 계약일자 : {data['청약일정'].get('계약일자', '-')}
 
-✔️추첨제 물량
+✔️ 가점제 비율
 """
+    # 존재하는 평형대 카테고리 파악 및 비율 문구 생성
+    size_cats = set()
     for s in data.get('세대수', []):
         try:
-            size = int(re.search(r'\d+', s['타입']).group())
-            cat = "60이하" if size <= 60 else ("85이하" if size <= 85 else "85초과")
-            ratio = data.get("가점제_비율", {}).get(cat, 40)/100
-            gen = int(s.get('일반공급', 0))
-            lottery = gen - math.ceil(gen * ratio)
-            summary += f"✅ 전용면적 {s['타입']} : {lottery} 세대\n"
+            size_match = re.search(r'\d+', str(s['타입']))
+            if size_match:
+                size = int(size_match.group())
+                cat = "60이하" if size <= 60 else ("85이하" if size <= 85 else "85초과")
+                size_cats.add(cat)
+        except: continue
+    
+    ratios = data.get("가점제_비율", {"60이하": 40, "85이하": 40, "85초과": 0})
+    if "60이하" in size_cats:
+        summary += f"✅ 전용면적 60㎡ 이하 : {ratios.get('60이하', 40)}%\n"
+    if "85이하" in size_cats:
+        summary += f"✅ 전용면적 60㎡ 초과 85㎡ 이하 : {ratios.get('85이하', 40)}%\n"
+    if "85초과" in size_cats:
+        summary += f"✅ 전용면적 85㎡ 초과 : {ratios.get('85초과', 0)}%\n"
+
+    summary += "\n✔️추첨제 물량\n"
+    for s in data.get('세대수', []):
+        try:
+            size_match = re.search(r'\d+', str(s['타입']))
+            if size_match:
+                size = int(size_match.group())
+                cat = "60이하" if size <= 60 else ("85이하" if size <= 85 else "85초과")
+                ratio = data.get("가점제_비율", {}).get(cat, 40)/100
+                gen = int(s.get('일반공급', 0))
+                lottery = gen - math.ceil(gen * ratio)
+                summary += f"✅ 전용면적 {s['타입']} : {lottery} 세대\n"
         except: continue
     
     summary += "\n[분양가]\n"
@@ -499,6 +525,7 @@ if st.session_state.extracted_data:
                     try: t_intr += parse_price(m['비율'], t_p) * ((data['대출정보']['cofix']+data.get('대출정보',{}).get('가산금리',1.5))/100) * ((move_in - datetime.strptime(re.sub(r'[^0-9]', '', str(m['날짜']))[:8], "%Y%m%d")).days/365)
                     except: pass
             t_intr = int(t_intr * 10000); 
+            st.session_state.total_interest_val = t_intr # 이자 값 저장
 
             # 이미지 생성 리스트 (2번 코드 실행부 로직 100% 반영)
             imgs = {
@@ -539,25 +566,96 @@ if st.session_state.extracted_data:
             st.subheader("📋 블로그 복사용 텍스트")
             st.text_area("드래그해서 복사하세요", value=st.session_state.blog_summary, height=400)
 
+        # 이미지-텍스트 매칭용 함수 (키워드 검색 방식)
+        def get_snippet(img_name, summary):
+            if not summary: return ""
+            sections = summary.split("\n\n")
+            
+            if "1_주요내용" in img_name:
+                for s in sections:
+                    if "[주요 규제" in s: return s
+            if "2_청약일정" in img_name:
+                for s in sections:
+                    if "[청약일정]" in s: return s
+            if "5_가점추첨" in img_name:
+                # 가점제 비율과 추첨제 물량을 모두 포함하여 반환
+                parts = []
+                for s in sections:
+                    if "✔️ 가점제 비율" in s or "✔️추첨제 물량" in s:
+                        parts.append(s)
+                return "\n\n".join(parts)
+            if "6_분양가" in img_name:
+                for s in sections:
+                    if "[분양가]" in s and "납부 계획" not in s: return s
+            if "7_납부일정" in img_name:
+                parts = []
+                collect = False
+                for s in sections:
+                    if "[분양가 납부 계획" in s:
+                        collect = True
+                    if collect:
+                        if "[옵션 및 발코니" in s or "[구체적인" in s:
+                            break
+                        parts.append(s)
+                return "\n\n".join(parts)
+            if "8_" in img_name: # 옵션/발코니 일정
+                for s in sections:
+                    if "[옵션 및 발코니 납부 계획]" in s: return s
+            if "12_최종계획" in img_name:
+                parts = []
+                collect = False
+                for s in sections:
+                    if "[구체적인 납부 금액" in s:
+                        collect = True
+                    if collect:
+                        parts.append(s)
+                return "\n\n".join(parts)
+            
+            # 매칭되는 키워드가 없을 때만 이자 정보 등 특수 케이스 처리
+            if "11_이자" in img_name:
+                data = st.session_state.extracted_data
+                spread = data.get('대출정보', {}).get('가산금리', 1.5)
+                intr_manwon = st.session_state.get('total_interest_val', 0) // 10000
+                return f"""먼저 중도금 이자입니다.
+
+이자는 신규COFIX금리인 {cofix}%에 가산금리 {spread}%를 더해서 계산해봤는데요.
+
+약 {intr_manwon:,}만원 수준입니다.
+
+해당 이자는 추후 금리 변동이나 중도상환 시 변경될 수 있으므로 참고만 부탁드립니다."""
+            
+            if "9_" in img_name:
+                return f"""👉 {target_type}타입 최고층
+👉 발코니 확장
+👉 현관 중문 옵션
+👉 시스템에어컨 전실
+👉 중도금이자 후불제"""
+                
+            return ""
+
         for n, img in st.session_state.generated_images.items():
             if img:
-                if use_base64:
-                    # 모든 사진에 Base64 적용 (해상도 축소 및 JPEG 압축으로 용량 극대화)
+                # 1. 이미지 출력
+                if use_base64 and (not locals().get('target_img_name') or n == target_img_name):
+                    # Base64 모드 (선택된 것만 혹은 루프 구조에 따라)
                     MAX_WIDTH = 1000
-                    if img.width > MAX_WIDTH:
-                        new_height = int(img.height * (MAX_WIDTH / img.width))
-                        img = img.resize((MAX_WIDTH, new_height), Image.Resampling.LANCZOS)
-                    
+                    img_to_show = img.resize((MAX_WIDTH, int(img.height * (MAX_WIDTH / img.width))), Image.Resampling.LANCZOS) if img.width > MAX_WIDTH else img
                     buffered = io.BytesIO()
-                    # JPEG는 투명도를 지원하지 않으므로 RGB로 변환
-                    rgb_img = img.convert("RGB") if img.mode == "RGBA" else img
+                    rgb_img = img_to_show.convert("RGB") if img_to_show.mode == "RGBA" else img_to_show
                     rgb_img.save(buffered, format="JPEG", quality=80)
                     img_base64 = base64.b64encode(buffered.getvalue()).decode()
-                    st.markdown(f'<img src="data:image/jpeg;base64,{img_base64}" width="100%" style="border: 1px solid #ddd; margin-bottom: 5px;">', unsafe_allow_html=True)
-                    st.caption(f"{n} (Base64 초경량 모드)")
+                    st.markdown(f'<img src="data:image/jpeg;base64,{img_base64}" width="100%" style="border: 2px solid #ff4b4b; margin-bottom: 5px;">', unsafe_allow_html=True)
                 else:
-                    # 일반 이미지 출력 (기본값)
-                    st.image(img, caption=n)
+                    st.image(img)
+                
+                # 2. 관련 텍스트 출력 (이미지 바로 아래 - 캡션 스타일 및 줄바꿈 유지)
+                snippet = get_snippet(n, st.session_state.blog_summary)
+                if snippet:
+                    # 마크다운 줄바꿈 규칙(공백 2개 + \n)을 적용하여 복사 시 줄바꿈 유지
+                    st.caption(snippet.replace("\n", "  \n"))
+                else:
+                    st.caption(n)
+                st.write("---")
 
     if st.session_state.blog_summary:
         buf = io.BytesIO()
